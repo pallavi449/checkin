@@ -4503,3 +4503,856 @@ export default function AdminTimeTracker() {
     </div>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+'use client';
+
+import { useState, useEffect } from 'react';
+
+interface UserData {
+  _id: string;
+  username: string;
+  email: string;
+  role: 'Admin' | 'User';
+  createdAt?: string;
+}
+
+interface SessionData {
+  _id: string;
+  userId: string;
+  checkIn?: string;
+  checkOut?: string | null;
+  createdAt?: string;
+  userName?: string;
+}
+
+interface AuthResponse {
+  message: string;
+  token: string;
+  user: {
+    id: string;
+    username: string;
+    email: string;
+    role: 'Admin' | 'User';
+  };
+}
+
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api';
+
+export default function AdminTimeTracker() {
+  const [currentUser, setCurrentUser] = useState<UserData | null>(null);
+  const [authToken, setAuthToken] = useState<string | null>(null);
+  const [loginEmail, setLoginEmail] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [loginRole, setLoginRole] = useState<'Admin' | 'User'>('User');
+  const [loggedIn, setLoggedIn] = useState(false);
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'users' | 'reports'>('dashboard');
+  const [isSignupMode, setIsSignupMode] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  // Signup states
+  const [signupUsername, setSignupUsername] = useState('');
+  const [signupEmail, setSignupEmail] = useState('');
+  const [signupPassword, setSignupPassword] = useState('');
+  const [signupRole, setSignupRole] = useState<'Admin' | 'User'>('User');
+
+  // User management states
+  const [users, setUsers] = useState<UserData[]>([]);
+  const [newUserUsername, setNewUserUsername] = useState('');
+  const [newUserEmail, setNewUserEmail] = useState('');
+  const [newUserPassword, setNewUserPassword] = useState('');
+  const [newUserRole, setNewUserRole] = useState<'Admin' | 'User'>('User');
+
+  // Time tracking states
+  const [checkInTime, setCheckInTime] = useState<Date | null>(null);
+  const [checkOutTime, setCheckOutTime] = useState<Date | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [sessionHistory, setSessionHistory] = useState<SessionData[]>([]);
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  const [allUserSessions, setAllUserSessions] = useState<SessionData[]>([]);
+
+  const getTodayKey = () => new Date().toISOString().split('T')[0];
+
+  // Helper function to safely create Date objects
+  const safeCreateDate = (dateString?: string): Date | null => {
+    if (!dateString) return null;
+    const date = new Date(dateString);
+    return isNaN(date.getTime()) ? null : date;
+  };
+
+  // Helper function to validate date strings
+  const isValidDateString = (dateString?: string): boolean => {
+    if (!dateString) return false;
+    return !isNaN(new Date(dateString).getTime());
+  };
+
+  useEffect(() => {
+    const savedToken = localStorage.getItem('authToken');
+    const savedUser = localStorage.getItem('currentUser');
+
+    if (savedToken && savedUser) {
+      try {
+        const user = JSON.parse(savedUser);
+        if (user && user._id && user.role) {
+          setAuthToken(savedToken);
+          setCurrentUser(user);
+          setLoggedIn(true);
+
+          if (user.role === 'User') {
+            loadUserData(user._id).catch((error) => {
+              console.error('Load user data error:', error);
+              setErrorMessage('Failed to load user data');
+            });
+          } else if (user.role === 'Admin') {
+            Promise.all([loadAllUserSessions(), loadAllUsers()]).catch((error) => {
+              console.error('Load admin data error:', error);
+              setErrorMessage('Failed to load admin data');
+            });
+          }
+        } else {
+          handleLogout();
+        }
+      } catch (error) {
+        console.error('Parse localStorage error:', error);
+        handleLogout();
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (currentUser && authToken) {
+      if (currentUser.role === 'User') {
+        loadUserData(currentUser._id).catch((error) => {
+          console.error('Sync user data error:', error);
+          setErrorMessage('Failed to sync user data');
+        });
+      } else if (currentUser.role === 'Admin') {
+        Promise.all([loadAllUserSessions(), loadAllUsers()]).catch((error) => {
+          console.error('Sync admin data error:', error);
+          setErrorMessage('Failed to sync admin data');
+        });
+      }
+    }
+  }, [currentUser, authToken]);
+
+  const loadAllUsers = async () => {
+    if (!authToken) {
+      setErrorMessage('No authentication token available');
+      return;
+    }
+    try {
+      const response = await fetch(`${API_BASE_URL}/access-control/users`, {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (!response.ok) throw new Error(`Failed to fetch users: ${response.statusText}`);
+      const data = await response.json();
+      if (Array.isArray(data)) setUsers(data);
+      else throw new Error('Unexpected response format');
+    } catch (error) {
+      console.error('Load users error:', error);
+      setErrorMessage('Failed to load users');
+    }
+  };
+
+  const handleLogin = async () => {
+    setIsLoading(true);
+    setErrorMessage(null);
+    try {
+      const response = await fetch(`${API_BASE_URL}/access-control/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: loginEmail, password: loginPassword, role: loginRole }),
+      });
+      const data: AuthResponse = await response.json();
+      if (response.ok && data.token && data.user) {
+        const userData: UserData = {
+          _id: data.user.id,
+          username: data.user.username,
+          email: data.user.email,
+          role: data.user.role,
+        };
+        setCurrentUser(userData);
+        setAuthToken(data.token);
+        setLoggedIn(true);
+        setLoginEmail('');
+        setLoginPassword('');
+
+        localStorage.setItem('authToken', data.token);
+        localStorage.setItem('currentUser', JSON.stringify(userData));
+
+        if (userData.role === 'User') await loadUserData(userData._id);
+        else if (userData.role === 'Admin') await Promise.all([loadAllUserSessions(), loadAllUsers()]);
+      } else setErrorMessage(data.message || 'Login failed');
+    } catch (error) {
+      console.error('Login error:', error);
+      setErrorMessage('Login failed. Please try again.');
+    }
+    setIsLoading(false);
+  };
+
+  const handleSignup = async () => {
+    setIsLoading(true);
+    setErrorMessage(null);
+    try {
+      const response = await fetch(`${API_BASE_URL}/access-control/signup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: signupUsername, email: signupEmail, password: signupPassword, role: signupRole }),
+      });
+      const data = await response.json();
+      if (response.ok) {
+        setErrorMessage('Signup successful! You can now login.');
+        setIsSignupMode(false);
+        setSignupUsername('');
+        setSignupEmail('');
+        setSignupPassword('');
+        setSignupRole('User');
+      } else setErrorMessage(data.message || 'Signup failed');
+    } catch (error) {
+      console.error('Signup error:', error);
+      setErrorMessage('Signup failed. Please try again.');
+    }
+    setIsLoading(false);
+  };
+
+  const handleLogout = () => {
+    setCurrentUser(null);
+    setAuthToken(null);
+    setLoggedIn(false);
+    setCheckInTime(null);
+    setCheckOutTime(null);
+    setSessionHistory([]);
+    setCurrentSessionId(null);
+    setActiveTab('dashboard');
+    setUsers([]);
+    setAllUserSessions([]);
+    setErrorMessage(null);
+
+    localStorage.removeItem('authToken');
+    localStorage.removeItem('currentUser');
+  };
+
+  const addNewUser = async () => {
+    if (!newUserUsername || !newUserEmail || !newUserPassword) {
+      setErrorMessage('Please fill in all fields');
+      return;
+    }
+    if (!authToken) {
+      setErrorMessage('No authentication token available');
+      return;
+    }
+    try {
+      const response = await fetch(`${API_BASE_URL}/access-control/signup`, {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify({ username: newUserUsername, email: newUserEmail, password: newUserPassword, role: newUserRole }),
+      });
+      const data = await response.json();
+      if (response.ok && data.user) {
+        const newUser: UserData = {
+          _id: data.user._id || data.user.id,
+          username: data.user.username || newUserUsername,
+          email: data.user.email || newUserEmail,
+          role: data.user.role || newUserRole,
+          createdAt: data.user.createdAt || new Date().toISOString(),
+        };
+        // Reload the full user list to ensure the UI reflects the latest data
+        await loadAllUsers();
+        setNewUserUsername('');
+        setNewUserEmail('');
+        setNewUserPassword('');
+        setNewUserRole('User');
+        setErrorMessage('User added successfully!');
+      } else setErrorMessage(data.message || 'Failed to add user');
+    } catch (error) {
+      console.error('Add user error:', error);
+      setErrorMessage('Failed to add user');
+    }
+  };
+
+  const deleteUser = async (userId: string) => {
+    if (!authToken) {
+      setErrorMessage('No authentication token available');
+      return;
+    }
+    if (window.confirm('Are you sure you want to delete this user?')) {
+      try {
+        const response = await fetch(`${API_BASE_URL}/access-control/users/${userId}`, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${authToken}` },
+        });
+        if (response.ok) {
+          setUsers(users.filter((u) => u._id !== userId));
+          setAllUserSessions(allUserSessions.filter((s) => s.userId !== userId));
+        } else throw new Error('Failed to delete user');
+      } catch (error) {
+        console.error('Delete user error:', error);
+        setErrorMessage('Failed to delete user');
+      }
+    }
+  };
+
+  const loadAllUserSessions = async () => {
+    if (!authToken) {
+      setErrorMessage('No authentication token available');
+      return;
+    }
+    try {
+      const response = await fetch(`${API_BASE_URL}/session`, {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (!response.ok) throw new Error(`Failed to fetch sessions: ${response.statusText}`);
+      const sessions: SessionData[] = await response.json();
+      if (Array.isArray(sessions)) {
+        const enrichedSessions = sessions
+          .filter((session) => isValidDateString(session.checkIn))
+           .map((session) => ({
+            ...session,
+            userName: users.find((u) => u._id === session.userId)?.username ||  'unknown',
+          }));
+        setAllUserSessions(enrichedSessions);
+      } else throw new Error('Unexpected response format');
+    } catch (error) {
+      console.error('Load sessions error:', error);
+      setErrorMessage('Failed to load sessions');
+    }
+  };
+
+  const loadUserData = async (userId: string) => {
+    if (!authToken) {
+      setErrorMessage('No authentication token available');
+      return;
+    }
+    try {
+      const response = await fetch(`${API_BASE_URL}/session`, {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (!response.ok) throw new Error(`Failed to fetch user sessions: ${response.statusText}`);
+      const sessions: SessionData[] = await response.json();
+      if (Array.isArray(sessions)) {
+        const userSessions = sessions.filter((s) => s.userId === userId && isValidDateString(s.checkIn));
+        // setSessionHistory(userSessions);
+        setSessionHistory(userSessions.map((session) => ({
+        ...session,
+        userName: users.find((u) => u._id === session.userId)?.username || session.userName || 'Unknown',
+      })));
+        const today = getTodayKey();
+        const todaySession = userSessions.find((s) => s.checkIn && new Date(s.checkIn).toISOString().split('T')[0] === today);
+
+        if (todaySession && todaySession.checkIn) {
+          const checkInDate = safeCreateDate(todaySession.checkIn);
+          const checkOutDate = todaySession.checkOut ? safeCreateDate(todaySession.checkOut) : null;
+          
+          setCheckInTime(checkInDate);
+          setCheckOutTime(checkOutDate);
+          setCurrentSessionId(todaySession._id);
+        } else {
+          setCheckInTime(null);
+          setCheckOutTime(null);
+          setCurrentSessionId(null);
+        }
+      } else throw new Error('Unexpected response format');
+    } catch (error) {
+      console.error('Load user data error:', error);
+      setErrorMessage('Failed to load user data');
+    }
+  };
+
+  const handleCheckIn = async () => {
+    if (!currentUser || !authToken) {
+      setErrorMessage('Not authenticated');
+      return;
+    }
+    setIsLoading(true);
+    setErrorMessage(null);
+    try {
+      const response = await fetch(`${API_BASE_URL}/session/checkin`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify({ userId: currentUser._id }),
+      });
+      const data = await response.json();
+      if (response.ok && data._id && data.checkIn) {
+        const checkInDate = safeCreateDate(data.checkIn);
+        if (checkInDate) {
+          const newSession: SessionData = {
+            ...data,
+            checkIn: checkInDate.toISOString(),
+            checkOut: null,
+            userName: currentUser.email,
+          };
+          setCheckInTime(checkInDate);
+          setCurrentSessionId(newSession._id);
+          setSessionHistory([newSession, ...sessionHistory]);
+          setAllUserSessions([newSession, ...allUserSessions]);
+          await loadAllUserSessions();
+        } else throw new Error('Invalid check-in date received');
+      } else setErrorMessage(data.message || 'Check-in failed');
+    } catch (error) {
+      console.error('Check-in error:', error);
+      setErrorMessage('Check-in failed');
+    }
+    setIsLoading(false);
+  };
+
+  const handleCheckOut = async () => {
+    if (!currentUser || !currentSessionId || !authToken) {
+      setErrorMessage('Not authenticated or no active session');
+      return;
+    }
+    setIsLoading(true);
+    setErrorMessage(null);
+    try {
+      const response = await fetch(`${API_BASE_URL}/session/checkout/${currentSessionId}`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      const data = await response.json();
+      if (response.ok && data._id && data.checkOut) {
+        const checkOutDate = safeCreateDate(data.checkOut);
+        if (checkOutDate) {
+          const updatedSession: SessionData = {
+            ...data,
+            checkOut: checkOutDate.toISOString(),
+            userName: currentUser.email,
+          };
+          setCheckOutTime(checkOutDate);
+          setSessionHistory((prev) =>
+            prev.map((s) => (s._id === currentSessionId ? { ...s, checkOut: updatedSession.checkOut } : s))
+          );
+          setAllUserSessions((prev) =>
+            prev.map((s) => (s._id === currentSessionId ? { ...s, checkOut: updatedSession.checkOut } : s))
+          );
+          setCurrentSessionId(null);
+          await loadAllUserSessions();
+        } else throw new Error('Invalid check-out date received');
+      } else setErrorMessage(data.message || 'Check-out failed');
+    } catch (error) {
+      console.error('Check-out error:', error);
+      setErrorMessage('Check-out failed');
+    }
+    setIsLoading(false);
+  };
+
+  const formatDate = (dateString?: string) => {
+    if (!isValidDateString(dateString)) return 'N/A';
+    return new Date(dateString!).toLocaleDateString('en-US', {
+      weekday: 'short',
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+    });
+  };
+
+  const formatTime = (time: Date | string | null | undefined) => {
+    if (!time) return 'N/A';
+    
+    let date: Date;
+    if (typeof time === 'string') {
+      if (!isValidDateString(time)) return 'N/A';
+      date = new Date(time);
+    } else {
+      date = time;
+    }
+    
+    return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+  };
+
+  const calculateHours = (checkIn: Date | string | null | undefined, checkOut: Date | string | null | undefined) => {
+    if (!checkIn || !checkOut) return 'N/A';
+    
+    let checkInDate: Date;
+    let checkOutDate: Date;
+    
+    if (typeof checkIn === 'string') {
+      if (!isValidDateString(checkIn)) return 'N/A';
+      checkInDate = new Date(checkIn);
+    } else {
+      checkInDate = checkIn;
+    }
+    
+    if (typeof checkOut === 'string') {
+      if (!isValidDateString(checkOut)) return 'N/A';
+      checkOutDate = new Date(checkOut);
+    } else {
+      checkOutDate = checkOut;
+    }
+    
+    if (isNaN(checkInDate.getTime()) || isNaN(checkOutDate.getTime())) return 'N/A';
+    
+    const diffMs = checkOutDate.getTime() - checkInDate.getTime();
+    const diffHours = diffMs / (1000 * 60 * 60);
+    return diffHours >= 0 ? `${diffHours.toFixed(1)}h` : 'N/A';
+  };
+
+  if (!loggedIn) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-indigo-900 via-purple-900 to-pink-800 flex items-center justify-center p-4">
+        <div className="absolute inset-0 overflow-hidden">
+          <div className="absolute -top-40 -right-40 w-80 h-80 bg-purple-500 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-pulse"></div>
+          <div className="absolute -bottom-40 -left-40 w-80 h-80 bg-pink-500 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-pulse"></div>
+        </div>
+        <div className="relative bg-white/10 backdrop-blur-lg border border-white/20 p-8 rounded-3xl shadow-2xl w-full max-w-md">
+          <div className="text-center space-y-6">
+            <div className="w-20 h-20 bg-gradient-to-br from-blue-400 to-purple-500 rounded-full mx-auto mb-4 flex items-center justify-center">
+              <svg className="w-10 h-10 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+              </svg>
+            </div>
+            <h2 className="text-3xl font-bold text-white">Time Tracker</h2>
+            <p className="text-blue-200">{isSignupMode ? 'Create your account' : 'Sign in to your account'}</p>
+            {errorMessage && <p className="text-red-400 text-sm">{errorMessage}</p>}
+            <div className="space-y-4">
+              {isSignupMode && (
+                <input
+                  type="text"
+                  placeholder="Username"
+                  value={signupUsername}
+                  onChange={(e) => setSignupUsername(e.target.value)}
+                  className="w-full p-4 bg-white/10 border border-white/20 rounded-2xl text-white placeholder-blue-200 focus:ring-2 focus:ring-blue-400 focus:border-transparent"
+                  onKeyDown={(e) => e.key === 'Enter' && handleSignup()}
+                />
+              )}
+              <input
+                type="email"
+                placeholder="Email"
+                value={isSignupMode ? signupEmail : loginEmail}
+                onChange={(e) => (isSignupMode ? setSignupEmail(e.target.value) : setLoginEmail(e.target.value))}
+                className="w-full p-4 bg-white/10 border border-white/20 rounded-2xl text-white placeholder-blue-200 focus:ring-2 focus:ring-blue-400 focus:border-transparent"
+                onKeyDown={(e) => e.key === 'Enter' && (isSignupMode ? handleSignup() : handleLogin())}
+              />
+              <input
+                type="password"
+                placeholder="Password"
+                value={isSignupMode ? signupPassword : loginPassword}
+                onChange={(e) => (isSignupMode ? setSignupPassword(e.target.value) : setLoginPassword(e.target.value))}
+                className="w-full p-4 bg-white/10 border border-white/20 rounded-2xl text-white placeholder-blue-200 focus:ring-2 focus:ring-blue-400 focus:border-transparent"
+                onKeyDown={(e) => e.key === 'Enter' && (isSignupMode ? handleSignup() : handleLogin())}
+              />
+              <select
+                value={isSignupMode ? signupRole : loginRole}
+                onChange={(e) => (isSignupMode ? setSignupRole(e.target.value as 'Admin' | 'User') : setLoginRole(e.target.value as 'Admin' | 'User'))}
+                className="w-full p-4 bg-white/10 border border-white/20 rounded-2xl text-white focus:ring-2 focus:ring-blue-400 focus:border-transparent"
+              >
+                <option value="User" className="bg-gray-800">User</option>
+                <option value="Admin" className="bg-gray-800">Admin</option>
+              </select>
+              <button
+                onClick={isSignupMode ? handleSignup : handleLogin}
+                disabled={isLoading}
+                className="w-full bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 disabled:from-gray-500 disabled:to-gray-600 text-white font-semibold py-4 rounded-2xl transition-all duration-300"
+              >
+                {isLoading ? (isSignupMode ? 'Creating Account...' : 'Signing In...') : isSignupMode ? 'Sign Up' : 'Sign In'}
+              </button>
+              <button
+                onClick={() => {
+                  setIsSignupMode(!isSignupMode);
+                  setErrorMessage(null);
+                }}
+                className="w-full text-blue-300 hover:text-white font-medium transition-colors"
+              >
+                {isSignupMode ? 'Already have an account? Sign In' : 'Need an account? Sign Up'}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (currentUser?.role === 'Admin') {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-indigo-900 via-purple-900 to-pink-800 p-4">
+        <div className="max-w-7xl mx-auto">
+          <div className="bg-white/10 backdrop-blur-lg border border-white/20 rounded-3xl p-6 mb-6">
+            <div className="flex justify-between items-center">
+              <div>
+                <h1 className="text-2xl font-bold text-white">Admin Dashboard</h1>
+                <p className="text-blue-200">Welcome, {currentUser.username || currentUser.email}</p>
+              </div>
+              <button onClick={handleLogout} className="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-xl transition-colors">
+                Logout
+              </button>
+            </div>
+            {errorMessage && <p className="text-red-400 text-sm mt-4">{errorMessage}</p>}
+          </div>
+          <div className="bg-white/10 backdrop-blur-lg border border-white/20 rounded-3xl p-2 mb-6">
+            <div className="flex space-x-2">
+              {['dashboard', 'users', 'reports'].map((tab) => (
+                <button
+                  key={tab}
+                  onClick={() => setActiveTab(tab as 'dashboard' | 'users' | 'reports')}
+                  className={`flex-1 py-3 px-4 rounded-2xl font-medium transition-all duration-300 ${
+                    activeTab === tab ? 'bg-blue-500 text-white shadow-lg' : 'text-blue-200 hover:text-white hover:bg-white/10'
+                  }`}
+                >
+                  {tab === 'dashboard' ? '📊 Dashboard' : tab === 'users' ? '👥 Manage Users' : '📋 All Reports'}
+                </button>
+              ))}
+            </div>
+          </div>
+          {activeTab === 'dashboard' && (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              <div className="bg-white/10 backdrop-blur-lg border border-white/20 rounded-3xl p-6">
+                <h3 className="text-white font-semibold mb-4 flex items-center">👥 Total Users</h3>
+                <p className="text-3xl font-bold text-white">{users.filter((u) => u.role === 'User').length}</p>
+                <p className="text-blue-200 text-sm mt-2">Active employees</p>
+              </div>
+              <div className="bg-white/10 backdrop-blur-lg border border-white/20 rounded-3xl p-6">
+                <h3 className="text-white font-semibold mb-4 flex items-center">✅ Today's Check-ins</h3>
+                <p className="text-3xl font-bold text-green-400">
+                  {allUserSessions.filter((s) => s.checkIn && new Date(s.checkIn).toISOString().split('T')[0] === getTodayKey()).length}
+                </p>
+                <p className="text-blue-200 text-sm mt-2">Users checked in today</p>
+              </div>
+              <div className="bg-white/10 backdrop-blur-lg border border-white/20 rounded-3xl p-6">
+                <h3 className="text-white font-semibold mb-4 flex items-center">🏃‍♂️ Currently Active</h3>
+                <p className="text-3xl font-bold text-yellow-400">
+                  {allUserSessions.filter((s) => s.checkIn && !s.checkOut && new Date(s.checkIn).toISOString().split('T')[0] === getTodayKey()).length}
+                </p>
+                <p className="text-blue-200 text-sm mt-2">Users currently working</p>
+              </div>
+            </div>
+          )}
+          {activeTab === 'users' && (
+            <div className="space-y-6">
+              <div className="bg-white/10 backdrop-blur-lg border border-white/20 rounded-3xl p-6">
+                <h3 className="text-white font-semibold mb-4">➕ Add New User</h3>
+                <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+                  <input
+                    type="text"
+                    placeholder="Username"
+                    value={newUserUsername}
+                    onChange={(e) => setNewUserUsername(e.target.value)}
+                    className="p-3 bg-white/10 border border-white/20 rounded-xl text-white placeholder-blue-200"
+                    onKeyDown={(e) => e.key === 'Enter' && addNewUser()}
+                  />
+                  <input
+                    type="email"
+                    placeholder="Email"
+                    value={newUserEmail}
+                    onChange={(e) => setNewUserEmail(e.target.value)}
+                    className="p-3 bg-white/10 border border-white/20 rounded-xl text-white placeholder-blue-200"
+                    onKeyDown={(e) => e.key === 'Enter' && addNewUser()}
+                  />
+                  <input
+                    type="password"
+                    placeholder="Password"
+                    value={newUserPassword}
+                    onChange={(e) => setNewUserPassword(e.target.value)}
+                    className="p-3 bg-white/10 border border-white/20 rounded-xl text-white placeholder-blue-200"
+                    onKeyDown={(e) => e.key === 'Enter' && addNewUser()}
+                  />
+                  <select
+                    value={newUserRole}
+                    onChange={(e) => setNewUserRole(e.target.value as 'Admin' | 'User')}
+                    className="p-3 bg-white/10 border border-white/20 rounded-xl text-white"
+                  >
+                    <option value="User" className="bg-gray-800">User</option>
+                    <option value="Admin" className="bg-gray-800">Admin</option>
+                  </select>
+                  <button onClick={addNewUser} className="bg-green-500 hover:bg-green-600 text-white font-semibold py-3 rounded-xl transition-colors">
+                    Add User
+                  </button>
+                </div>
+                {errorMessage && <p className="text-red-400 text-sm mt-4">{errorMessage}</p>}
+              </div>
+              <div className="bg-white/10 backdrop-blur-lg border border-white/20 rounded-3xl p-6">
+                <h3 className="text-white font-semibold mb-4">👥 All Users</h3>
+                <div className="space-y-3">
+                  {users.map((user) => (
+                    <div key={user._id} className="bg-white/5 rounded-xl p-4 flex justify-between items-center">
+                      <div>
+                        <p className="text-white font-medium">{user.username || user.email}</p>
+                        <p className="text-blue-200 text-sm">{user.email} • Role: {user.role} • Created: {formatDate(user.createdAt)}</p>
+                      </div>
+                      <div className="flex gap-2">
+                        <span className={`px-3 py-1 rounded-full text-xs font-medium ${user.role === 'Admin' ? 'bg-purple-500 text-white' : 'bg-blue-500 text-white'}`}>
+                          {user.role}
+                        </span>
+                        {user.email !== currentUser?.email && (
+                          <button onClick={() => deleteUser(user._id)} className="bg-red-500 hover:bg-red-600 text-white px-3 py-1 rounded-full text-xs transition-colors">
+                            Delete
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+          {activeTab === 'reports' && (
+            <div className="bg-white/10 backdrop-blur-lg border border-white/20 rounded-3xl p-6">
+              <h3 className="text-white font-semibold mb-6">📋 All User Sessions</h3>
+              <div className="space-y-3 max-h-96 overflow-y-auto">
+                {allUserSessions.length > 0 ? (
+                  allUserSessions
+                    .sort((a, b) => (b.checkIn && a.checkIn ? new Date(b.checkIn).getTime() - new Date(a.checkIn).getTime() : 0))
+                    .map((session) => (
+                      <div key={session._id} className="bg-white/5 rounded-xl p-4 border border-white/10">
+                        <div className="flex justify-between items-start mb-3">
+                          <div>
+                            <p className="text-white font-medium">{session.userName}</p>
+                            <p className="text-blue-200 text-sm">{formatDate(session.checkIn)}</p>
+                          </div>
+                          <div className="flex gap-2">
+                            {session.checkIn && new Date(session.checkIn).toISOString().split('T')[0] === getTodayKey() && (
+                              <span className="bg-blue-500 text-white text-xs px-2 py-1 rounded-full">Today</span>
+                            )}
+                            {session.checkIn && !session.checkOut && (
+                              <span className="bg-green-500 text-white text-xs px-2 py-1 rounded-full">Active</span>
+                            )}
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-3 gap-4 text-sm">
+                          <div>
+                            <span className="text-blue-200">Check In: </span>
+                            <span className="text-white font-mono">{formatTime(session.checkIn)}</span>
+                          </div>
+                          <div>
+                            <span className="text-blue-200">Check Out: </span>
+                            <span className="text-white font-mono">{formatTime(session.checkOut)}</span>
+                          </div>
+                          <div>
+                            <span className="text-blue-200">Hours: </span>
+                            <span className="text-white font-mono">{calculateHours(session.checkIn, session.checkOut)}</span>
+                          </div>
+                        </div>
+                      </div>
+                    ))
+                ) : (
+                  <p className="text-blue-200 text-center py-8">No session data available</p>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-indigo-900 via-purple-900 to-pink-800 flex items-center justify-center p-4">
+      <div className="absolute inset-0 overflow-hidden">
+        <div className="absolute -top-40 -right-40 w-80 h-80 bg-purple-500 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-pulse"></div>
+        <div className="absolute -bottom-40 -left-40 w-80 h-80 bg-pink-500 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-pulse"></div>
+      </div>
+      <div className="relative bg-white/10 backdrop-blur-lg border border-white/20 p-8 rounded-3xl shadow-2xl w-full max-w-2xl">
+        <div className="text-center mb-8">
+          <div className="w-20 h-20 bg-gradient-to-br from-blue-400 to-purple-500 rounded-full mx-auto mb-4 flex items-center justify-center">
+            <svg className="w-10 h-10 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+            </svg>
+          </div>
+          <h2 className="text-2xl font-bold text-white mb-2">Welcome back!</h2>
+          <p className="text-blue-200 text-sm">{currentUser?.email}</p>
+          {errorMessage && <p className="text-red-400 text-sm mt-2">{errorMessage}</p>}
+        </div>
+        <div className="space-y-4 mb-6">
+          <div className="grid grid-cols-2 gap-4">
+            <button
+              onClick={handleCheckIn}
+              disabled={isLoading || !!currentSessionId}
+              className={`group relative ${isLoading || !!currentSessionId ? 'bg-gray-500 cursor-not-allowed' : 'bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700'} text-white font-semibold py-4 px-4 rounded-2xl transition-all duration-300 transform hover:scale-105 hover:shadow-lg`}
+            >
+              <span>{isLoading ? 'Loading...' : 'Check In'}</span>
+            </button>
+            <button
+              onClick={handleCheckOut}
+              disabled={!currentSessionId || isLoading}
+              className={`group relative ${currentSessionId && !isLoading ? 'bg-gradient-to-r from-red-500 to-pink-600 hover:from-red-600 hover:to-pink-700' : 'bg-gray-500 cursor-not-allowed'} text-white font-semibold py-4 px-4 rounded-2xl transition-all duration-300 transform hover:scale-105 hover:shadow-lg`}
+            >
+              <span>{isLoading ? 'Loading...' : 'Check Out'}</span>
+            </button>
+          </div>
+        </div>
+        <div className="space-y-4">
+          <div className="bg-white/10 backdrop-blur-sm rounded-2xl p-4 border border-white/20">
+            <h3 className="text-white font-semibold mb-3">⏱️ Today's Time Tracking</h3>
+            <div className="space-y-2 text-sm">
+              <div className="flex justify-between">
+                <span className="text-blue-200">Check-In:</span>
+                <span className="text-white font-mono">{formatTime(checkInTime)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-blue-200">Check-Out:</span>
+                <span className="text-white font-mono">{formatTime(checkOutTime)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-blue-200">Hours:</span>
+                <span className="text-white font-mono">{calculateHours(checkInTime, checkOutTime)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-blue-200">Status:</span>
+                <span className={`font-mono ${currentSessionId ? 'text-green-400' : 'text-gray-400'}`}>
+                  {currentSessionId ? 'Checked In' : 'Not Active'}
+                </span>
+              </div>
+            </div>
+          </div>
+          <div className="bg-white/10 backdrop-blur-sm rounded-2xl p-4 border border-white/20">
+            <h3 className="text-white font-semibold mb-3">📊 My History</h3>
+            <div className="space-y-2 max-h-40 overflow-y-auto">
+              {sessionHistory.length > 0 ? (
+                sessionHistory.map((session) => (
+                  <div key={session._id} className="bg-white/5 rounded-xl p-3 border border-white/10">
+                    <div className="flex justify-between items-center mb-2">
+                      <span className="text-white font-medium text-sm">{formatDate(session.checkIn)}</span>
+                      {session.checkIn && new Date(session.checkIn).toISOString().split('T')[0] === getTodayKey() && (
+                        <span className="bg-blue-500 text-white text-xs px-2 py-1 rounded-full">Today</span>
+                      )}
+                    </div>
+                    <div className="grid grid-cols-3 gap-2 text-xs">
+                      <div>
+                        <span className="text-blue-200">In: </span>
+                        <span className="text-white font-mono">{formatTime(session.checkIn)}</span>
+                      </div>
+                      <div>
+                        <span className="text-blue-200">Out: </span>
+                        <span className="text-white font-mono">{formatTime(session.checkOut)}</span>
+                      </div>
+                      <div>
+                        <span className="text-blue-200">Hours: </span>
+                        <span className="text-white font-mono">{calculateHours(session.checkIn, session.checkOut)}</span>
+                      </div>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <p className="text-blue-200 text-sm text-center py-4">No history available</p>
+              )}
+            </div>
+          </div>
+        </div>
+        <button onClick={handleLogout} className="w-full mt-6 bg-white/10 hover:bg-white/20 text-white font-semibold py-3 rounded-2xl transition-all duration-300 border border-white/20">
+          Logout
+        </button>
+      </div>
+    </div>
+  );
+}
